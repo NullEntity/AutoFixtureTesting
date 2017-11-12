@@ -27,7 +27,7 @@ namespace AutoFixtureTest
     {
         public void Customize(IFixture fixture)
         {
-            fixture.Customize<Baz>(composer => composer.OmitAutoProperties());
+            fixture.Customize<Foo>(composer => composer.OmitAutoProperties());
         }
     }
 
