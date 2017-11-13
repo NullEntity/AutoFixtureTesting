@@ -1,6 +1,11 @@
 ﻿using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Linq.Expressions;
+using System.Reflection;
+using AutoFixture;
+using AutoFixture.Kernel;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
-using Ploeh.AutoFixture;
 
 namespace AutoFixtureTest
 {
@@ -11,31 +16,93 @@ namespace AutoFixtureTest
         public void TestMethod1()
         {
             var fixture = new Fixture();
-            fixture.Customize(new CompositeCustomization(
-                new FooComponent(),
-                new BarComponent()
-            ));
+            fixture.Customizations.Add(new PropertyDeclaringTypeOmitter(typeof(Foo)));
+            fixture.CustomizePostActions<Bar>(transformation => transformation.With(bar => bar.BarString, "bar"));
             var baz = fixture.Create<Baz>();
 
             Assert.IsNull(baz.FooString, "Foo.FooString should be null");
-            Assert.AreEqual(baz.BarString, "bar", "Bar.BarString should be constant \"bar\"");
+            Assert.AreEqual("bar", baz.BarString, "Bar.BarString should be constant \"bar\"");
             Assert.IsNotNull(baz.BazString, "Baz.BazString should be randomly generated");
         }
     }
 
-    public class FooComponent : ICustomization
+    public static class PostActionsCustomization
     {
-        public void Customize(IFixture fixture)
+        public static IFixture CustomizePostActions<T>(
+            this IFixture fixture,
+            Func<PostActionTransformation<T>, ISpecimenBuilderTransformation> customizations)
         {
-            fixture.Customize<Foo>(composer => composer.OmitAutoProperties());
+            fixture.Behaviors.Add(customizations.Invoke(new PostActionTransformation<T>()));
+
+            return fixture;
+        }
+
+        public class PostActionTransformation<T> : ISpecimenBuilderTransformation
+        {
+            private readonly List<ISpecimenCommand> _commands = new List<ISpecimenCommand>();
+
+            public ISpecimenBuilder Transform(ISpecimenBuilder builder)
+            {
+                return new Postprocessor(
+                    builder,
+                    new CompositeSpecimenCommand(_commands),
+                    new IsAssignableToTypeSpecification(typeof(T)));
+            }
+
+            public PostActionTransformation<T> With<TProperty>(Expression<Func<T, TProperty>> propertyPicker,
+                TProperty value)
+            {
+                _commands.Add(new BindingCommand<T, TProperty>(propertyPicker, value));
+
+                return this;
+            }
+        }
+
+        /// <summary>
+        /// Specification that checks that request type is assignable to the specified type
+        /// </summary>
+        private class IsAssignableToTypeSpecification : IRequestSpecification
+        {
+            private readonly Type _expectedType;
+
+            public IsAssignableToTypeSpecification(Type expectedType)
+            {
+                if (expectedType == null)
+                    throw new ArgumentNullException(nameof(expectedType));
+                _expectedType = expectedType;
+            }
+
+            public bool IsSatisfiedBy(object request)
+            {
+                var typeRequest = request as Type;
+                return typeRequest != null && _expectedType.IsAssignableFrom(typeRequest);
+            }
         }
     }
 
-    public class BarComponent : ICustomization
+    internal class PropertyDeclaringTypeOmitter : ISpecimenBuilder
     {
-        public void Customize(IFixture fixture)
+        private readonly Type _type;
+
+        internal PropertyDeclaringTypeOmitter(Type type)
         {
-            fixture.Customize<Bar>(composer => composer.With(bar => bar.BarString, "bar"));
+            if (type == null)
+                throw new ArgumentNullException(nameof(type));
+
+            _type = type;
+        }
+
+        public object Create(object request, ISpecimenContext context)
+        {
+            var propInfo = request as PropertyInfo;
+            if (propInfo != null && propInfo.DeclaringType == _type)
+                return new OmitSpecimen();
+
+            var fieldInfo = request as FieldInfo;
+            if (fieldInfo != null && fieldInfo.DeclaringType == _type)
+                return new OmitSpecimen();
+
+            return new NoSpecimen();
         }
     }
 
